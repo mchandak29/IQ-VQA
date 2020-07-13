@@ -19,15 +19,16 @@ from config.config import cfg
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="config yaml file")
-    parser.add_argument("--out_prefix", type=str, required=True,
-                        help="output file name prefix, will append .json or .pkl")
-    parser.add_argument("--model_path", type=str, help="path of model", required=True)
-    parser.add_argument("--batch_size", type=int,
-                        help="batch_size for test, o.w. using the one in config file", default=None)
-    parser.add_argument("--num_workers",type=int, help="num_workers in dataLoader, default 0", default=5)
+    parser.add_argument("--out_prefix", type=str, help="output file name prefix, will append .json or .pkl", default='output')
+    parser.add_argument("--log_dir", type=str, help="log directory to store gq", default='boards/default/')
+    parser.add_argument("--model_path", type=str, required=True, help="path of model")
+    parser.add_argument("--batch_size", type=int, help="batch_size for test", default=None)
+    parser.add_argument("--num_workers",type=int, help="num_workers in dataLoader", default=5)
+    parser.add_argument("--iter", type=int, help="iteration for storing gq", default=50000)
     parser.add_argument("--json_only", action='store_true', help="flag for only need json result")
     parser.add_argument("--use_val",action='store_true',help="flag for using val data for test")
-    parser.add_argument("--store_result",action='store_true',help="flag for storing val data in json")
+    parser.add_argument("--store_result",action='store_true',help="flag for storing test results")
+    parser.add_argument("--store_questions",action='store_true',help="flag for storing generated questions")
     
 
     arguments = parser.parse_args()
@@ -82,8 +83,12 @@ if __name__ == '__main__':
         
     else:    
         if args.use_val:
-            acc, ns, _ = one_stage_eval_model(data_reader_test, my_model, i_iter = 50000, log_dir='/home1/BTP/pg_aa_1/btp/boards/pythia_cycle_consistent/3014/')
-            print("Validation accuracy : %.6f" % acc)
+            if args.store_questions:
+                acc, ns, _ = one_stage_eval_model(data_reader_test, my_model, i_iter = args.iter, log_dir=args.log_dir)
+                print("Validation accuracy : %.6f" % acc)
+            else:
+                acc, ns, _ = one_stage_eval_model(data_reader_test, my_model)
+                print("Validation accuracy : %.6f" % acc)
 
     print("DONE")
 
