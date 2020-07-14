@@ -8,9 +8,7 @@ Python implementation of work presented in https://arxiv.org/abs/2007.04422
 0. [Quick start](#quick-start)
 0. [Preprocess dataset](#preprocess-dataset)
 0. [Test with pretrained models](#test-with-pretrained-models)
-0. [Ensemble models](#ensemble-models)
 0. [Customize config](#customize-config)
-0. [Docker demo](#docker-demo)
 0. [AWS s3 dataset summary](#aws-s3-dataset-summary)
 0. [Acknowledgements](#acknowledgements)
 0. [References](#references)
@@ -100,20 +98,9 @@ optional arguments:
                         training
 ```
 
-Run model without finetuning
-```bash
-cd ../
-python train.py
-```
 If there is a out of memory error, try:
 ```bash
 python train.py --config_overwrite '{data:{image_fast_reader:false}}'
-```
-
-Run model with features from detectron with finetuning
-```bash
-python train.py --config config/keep/detectron.yaml
-
 ```
 Check result for the default run
 ```bash
@@ -200,12 +187,5 @@ Here, we listed the size of some large files in our AWS S3 bucket.
 ### Acknowledgements
 We would like to thank Manish Borthakur, Aditi Jain and Udita Mittal from Indian Institute of Technology, Delhi for annotating the VQA-Implications dataset.
 
-
 ### References
-- Y. Jiang, and V. Natarajan and X. Chen and M. Rohrbach and D. Batra and D. Parikh. Pythia v0.1: The Winning Entry to the VQA Challenge 2018. CoRR, abs/1807.09956, 2018.
-- P. Anderson, X. He, C. Buehler, D. Teney, M. Johnson, S. Gould, and L. Zhang. Bottom-up and top-down attenttion for image captioning and visual question answering. In _CVPR_, 2018.
-- S. Antol,   A. Agrawal,   J. Lu,   M. Mitchell,   D. Batra,C. Lawrence Zitnick, and D. Parikh.  VQA:  Visual question answering. In _ICCV_, 2015
-- A. Das,  S. Kottur,  K. Gupta,  A. Singh,  D. Yadav,  J. M. Moura, D. Parikh, and D. Batra.  Visual Dialog.  In _CVPR_, 2017
-- Y. Goyal, T. Khot, D. Summers-Stay, D. Batra, and D. Parikh. Making the V in VQA matter: Elevating the role of image understanding in Visual Question Answering. In _CVPR_, 2017.
-- D. Teney, P. Anderson, X. He, and A. van den Hengel. Tips and tricks for visual question answering: Learnings from the 2017 challenge. CoRR, abs/1708.02711, 2017.
-- Z. Yu, J. Yu, C. Xiang, J. Fan, and D. Tao. Beyond bilinear: Generalized multimodal factorized high-order pooling for visual question answering. _TNNLS_, 2018.
+- V. Goel and M. Chandak and A. Anand and P. Guha. IQ-VQA: Intelligent Visual Question Answering. arXiv preprint arXiv:2007.04422, 2020.
