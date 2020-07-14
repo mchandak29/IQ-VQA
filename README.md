@@ -188,4 +188,4 @@ Here, we listed the size of some large files in our AWS S3 bucket.
 We would like to thank Manish Borthakur, Aditi Jain and Udita Mittal from Indian Institute of Technology, Delhi for annotating the VQA-Implications dataset.
 
 ### References
-- V. Goel and M. Chandak and A. Anand and P. Guha. IQ-VQA: Intelligent Visual Question Answering. arXiv preprint arXiv:2007.04422, 2020.
+V. Goel and M. Chandak and A. Anand and P. Guha. IQ-VQA: Intelligent Visual Question Answering. arXiv preprint arXiv:2007.04422, 2020.
