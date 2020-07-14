@@ -7,7 +7,7 @@ Python implementation of work presented in https://arxiv.org/abs/2007.04422
 0. [Installing pythia environment](#installing-pythia-environment)
 0. [Quick start](#quick-start)
 0. [Preprocess dataset](#preprocess-dataset)
-0. [Test with pretrained models](#test-with-pretrained-models)
+0. [Test with pretrained models](#best-pretrained-models)
 0. [Customize config](#customize-config)
 0. [AWS s3 dataset summary](#aws-s3-dataset-summary)
 0. [Acknowledgements](#acknowledgements)
