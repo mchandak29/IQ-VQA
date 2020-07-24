@@ -66,13 +66,11 @@ def one_stage_train(
     snapshot_interval = cfg.training_parameters.snapshot_interval
     max_iter = cfg.training_parameters.max_iter
 
-    is_failure_prediction = hasattr(myModel, "failure_predictor")
     is_question_consistency = hasattr(myModel, "question_consistency")
 
     vocab, ans_vocab = obtain_vocabs(cfg)
 
     if isinstance(myModel, torch.nn.DataParallel):
-        is_failure_prediction = hasattr(myModel.module, "failure_predictor")
         is_question_consistency = hasattr(myModel.module, "question_consistency")
 
     # Set model to train
@@ -101,24 +99,17 @@ def one_stage_train(
             if i_iter > max_iter:
                 break
 
-
             answer_scores = batch["ans_scores"]
             answer_scores_cuda = batch["ans_scores"].cuda()
             n_sample = answer_scores.size(0)
             n_sample_tot += n_sample
             myOptimizer.zero_grad()
             
-            
             add_graph = False
 
             myModel = myModel.train()
-            if is_failure_prediction and not is_question_consistency:
-                _return_dict = one_stage_run_model(batch, myModel, add_graph, log_dir)
-                logit_res = _return_dict["logits"]
-                fp_return_dict = _return_dict["fp_return_dict"]
-                confidence_fp = fp_return_dict["confidence"]
-
-            elif is_question_consistency and not is_failure_prediction:
+            
+            if is_question_consistency:
                 _return_dict = one_stage_run_model(batch, myModel, add_graph, log_dir)
                 logit_res = _return_dict["logits"]
                 qc_return_dict = _return_dict["qc_return_dict"]
@@ -126,15 +117,6 @@ def one_stage_train(
                
                 qc_loss = torch.mean(qc_loss, 0)  #calculated only on flagged data
                 
-
-            elif is_failure_prediction and is_question_consistency:
-                _return_dict = one_stage_run_model(batch, myModel, add_graph, log_dir)
-                logit_res = _return_dict["logits"]
-                fp_return_dict = _return_dict["fp_return_dict"]
-                confidence_fp = fp_return_dict["confidence"]
-                qc_return_dict = _return_dict["qc_return_dict"]
-                qc_loss = qc_return_dict["qc_loss"]
-
             else:
                 logit_res = one_stage_run_model(batch, myModel, add_graph, log_dir)[
                     "logits"
@@ -145,59 +127,16 @@ def one_stage_train(
                 input_answers_variable = input_answers_variable.cuda()
 
             total_loss = loss_criterion(logit_res, input_answers_variable)
-#             if not i_iter%100:
-#                 print(np.quantile(total_loss.detach().cpu().numpy(), .40))
-#             new_flags  = torch.tensor([l<3e-4 for l in total_loss]) # flag for good vqa outputs 
             total_loss = total_loss.sum()
             
-            if is_failure_prediction and not is_question_consistency:
-                normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-                answers_fp = (
-                    torch.max(normalized_logits, 1)[1]
-                    == torch.max(answer_scores_cuda, 1)[1]
-                )
-                fp_loss = F.cross_entropy(
-                    input=confidence_fp,
-                    target=answers_fp.long(),
-                    weight=torch.Tensor([1.0, 1.0]).cuda(),
-                )
-                total_loss += cfg.training_parameters.fp_lambda * fp_loss
-                qc_loss = 0
-
-            elif is_question_consistency and not is_failure_prediction:
-                total_loss += cfg.training_parameters.qc_lambda * qc_loss
-                fp_loss = 0
-
-            elif is_question_consistency and is_failure_prediction:
-                normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-                answers_fp = (
-                    torch.max(normalized_logits, 1)[1]
-                    == torch.max(answer_scores_cuda, 1)[1]
-                )
-                fp_loss = F.cross_entropy(
-                    input=confidence_fp,
-                    target=answers_fp.long(),
-                    weight=torch.Tensor([1.0, 1.0]).cuda(),
-                )
-                total_loss += cfg.training_parameters.fp_lambda * fp_loss
+            if is_question_consistency:
                 total_loss += cfg.training_parameters.qc_lambda * qc_loss
 
             else:
                 qc_loss = 0
-                fp_loss = 0
-
-            if is_failure_prediction:
-                # Thresholding at zero is just computing CM
-                batch_cm = thresholding(
-                    confidence_fp, answers_fp, ttype="failure_prediction", threshold=0.0
-                )
-                confusion_mat += batch_cm
-
-#             print("{}_{}: QC: {:.4f} FP: {:.4f} T: {:.4f}".format(
-#                 iepoch, i_iter, float(qc_loss), float(fp_loss), float(total_loss)
-#             ))
-
+            
             total_loss.backward()
+            
             if max_grad_l2_norm is not None:
                 if clip_norm_mode == "all":
                     norm = nn.utils.clip_grad_norm_(
@@ -214,6 +153,7 @@ def one_stage_train(
                     pass
                 else:
                     raise NotImplementedError
+
             myOptimizer.step()
             scheduler.step(i_iter)
 
@@ -257,10 +197,6 @@ def one_stage_train(
                         detached_g_emb, detached_o_emb
                     )
                     
-#                     questions = [[vocab[idx] for idx in detached_o_q[j]] for j in range(len(detached_o_q))]
-#                     gt_questions = [[vocab[idx] for idx in detached_g_q[j]] for j in range(len(detached_g_q))]
-                    
-#                     print(questions,gt_questions,cosine_similarity)
                     allowed_indices = (
                         cosine_similarity
                         > cfg["model"]["question_consistency"]["gating_th"]
@@ -275,23 +211,9 @@ def one_stage_train(
                 cycle_return_dict = one_stage_run_model(cycle_batch, myModel)
                 
                 
-                if cfg["model"]["question_consistency"]["vqa_gating"]:
-                    allowed_indices = (
-                        cycle_return_dict["logits"].max(1)[1]
-                        == cycle_batch["imp_ans_scores"].cuda().max(1)[1]
-                    )
-                
                 ############### Compare with Implied Answer ground truth value #######################
                 
                 allowed_indices*= batch["flag"].cuda() 
-#                 allowed_indices*= new_flags.cuda()
-                
-#                 if allowed_indices.sum() > -1:
-#                     cycle_vqa_loss = cfg.training_parameters.cc_lambda * loss_criterion(
-#                         cycle_return_dict["logits"][allowed_indices],
-#                         cycle_batch["ans_scores"][allowed_indices].cuda(),
-#                     )
-                    
                 
                 if allowed_indices.sum() > -1:
                     cycle_vqa_loss = cfg.training_parameters.cc_lambda * loss_criterion(
@@ -301,11 +223,7 @@ def one_stage_train(
                     
                     # perform backward pass
                     cycle_vqa_loss.sum().backward()
-#                     print(
-#                         "CL: {:.4f} Pass: [{}/512]".format(
-#                             cycle_vqa_loss, allowed_indices.sum().cpu().item()
-#                         )
-#                     )
+
                     myOptimizer.step()
 
             scores = torch.sum(
@@ -330,20 +248,12 @@ def one_stage_train(
                     "train_loss: %.4f" % cur_loss,
                     " train_score: %.4f" % accuracy,
                     " qc_loss: %.4f" % qc_loss,
-                    " fp_loss: %.4f" % fp_loss,
                     " avg_train_score: %.4f" % avg_accuracy,
                     "val_score: %.4f" % val_score,
                     "val_loss: %.4f" % val_loss,
                     "time(s): %.1f" % time,
                 )
                 sys.stdout.flush()
-
-#                 cm_stat_dict = print_classification_report(
-#                     confusion_mat, threshold=0.0, return_dict=True
-#                 )
-
-#                 for k, v in cm_stat_dict.items():
-#                     writer.add_scalar("train_" + k, v, i_iter)
 
                 writer.add_scalar("train_loss", cur_loss, i_iter)
                 writer.add_scalar("train_score", accuracy, i_iter)
@@ -357,14 +267,10 @@ def one_stage_train(
                     val_accuracy, upbound_acc, val_sample_tot, val_confusion_mat = one_stage_eval_model(
                         data_reader_eval,
                         myModel,
-                        return_cm=True,
                         i_iter=i_iter,
                         log_dir=log_dir,
                     )
-                    val_precision = print_classification_report(
-                        val_confusion_mat, threshold=0.0, return_dict=True
-                    )["prec"]
-
+                    
                     end = timeit.default_timer()
                     epoch_time = end - start
                     start = timeit.default_timer()
@@ -396,30 +302,15 @@ def one_stage_train(
                 with open(model_result_file, "w") as fid:
                     fid.write("%d:%.5f\n" % (iepoch, val_accuracy * 100))
 
-                if is_failure_prediction:
-                    if val_precision > best_val_precision:
-                        best_val_precision = val_precision
-                        best_epoch = iepoch
-                        best_iter = i_iter
-                        best_model_snapshot_file = os.path.join(
-                            snapshot_dir, "best_model.pth"
-                        )
-                        shutil.copy(model_snapshot_file, best_model_snapshot_file)
+                if val_accuracy > best_val_accuracy:
+                    best_val_accuracy = val_accuracy
+                    best_epoch = iepoch
+                    best_iter = i_iter
+                    best_model_snapshot_file = os.path.join(
+                        snapshot_dir, "best_model.pth"
+                    )
+                    shutil.copy(model_snapshot_file, best_model_snapshot_file)
 
-                else:
-                    if val_accuracy > best_val_accuracy:
-                        best_val_accuracy = val_accuracy
-                        best_epoch = iepoch
-                        best_iter = i_iter
-                        best_model_snapshot_file = os.path.join(
-                            snapshot_dir, "best_model.pth"
-                        )
-                        shutil.copy(model_snapshot_file, best_model_snapshot_file)
-
-#         print("training" + "=" * 45)
-#         print_classification_report(confusion_mat, 0.0)
-        confusion_mat = np.zeros((2, 2))
-#         print("=" * 53)
         gc.collect()
 
     writer.export_scalars_to_json(os.path.join(log_dir, "all_scalars.json"))
@@ -444,36 +335,18 @@ def evaluate_a_batch(batch, myModel, loss_criterion):
     # Set model to eval
     myModel = myModel.eval()
 
-    is_failure_prediction = hasattr(myModel, "failure_prediction")
     is_question_consistency = hasattr(myModel, "question_consistency")
 
     if isinstance(myModel, torch.nn.DataParallel):
-        is_failure_prediction = (
-            True if hasattr(myModel.module, "failure_predictor") else False
-        )
         is_question_consistency = (
             True if hasattr(myModel.module, "question_consistency") else False
         )
 
-    if is_failure_prediction and not is_question_consistency:
-        _return_dict = one_stage_run_model(batch, myModel)
-        logit_res = _return_dict["logits"]
-        fp_return_dict = _return_dict["fp_return_dict"]
-        confidence_fp = fp_return_dict["confidence"]
-
-    elif is_question_consistency and not is_failure_prediction:
+    if is_question_consistency:
         _return_dict = one_stage_run_model(batch, myModel)
         logit_res = _return_dict["logits"]
         qc_return_dict = _return_dict["qc_return_dict"]
         qc_loss = torch.mean(qc_return_dict["qc_loss"])
-
-    elif is_question_consistency and is_failure_prediction:
-        _return_dict = one_stage_run_model(batch, myModel)
-        logit_res = _return_dict["logits"]
-        fp_return_dict = _return_dict["fp_return_dict"]
-        confidence_fp = fp_return_dict["confidence"]
-        qc_return_dict = _return_dict["qc_return_dict"]
-        qc_loss = qc_return_dict["qc_loss"]
 
     else:
         logit_res = one_stage_run_model(batch, myModel)["logits"]
@@ -484,25 +357,10 @@ def evaluate_a_batch(batch, myModel, loss_criterion):
 
     total_loss = loss_criterion(logit_res, input_answers_variable)
 
-    if is_failure_prediction and not is_question_consistency:
-        total_loss = 0
-        normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-        answers_fp = (
-            torch.max(normalized_logits, 1)[1] == torch.max(answer_scores_cuda, 1)[1]
-        )
-        total_loss += F.cross_entropy(input=confidence_fp, target=answers_fp.long())
 
-    if is_question_consistency and not is_failure_prediction:
-        total_loss = 0
+    if is_question_consistency:
         total_loss += qc_loss
 
-    elif is_failure_prediction and is_question_consistency:
-        normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-        answers_fp = (
-            torch.max(normalized_logits, 1)[1] == torch.max(answer_scores_cuda, 1)[1]
-        )
-        total_loss += F.cross_entropy(input=confidence_fp, target=answers_fp.long())
-        total_loss += qc_loss
 
     gc.collect()
     return predicted_scores / n_sample, total_loss.item()
@@ -558,22 +416,13 @@ def one_stage_eval_model(
             for jdx, (q, gtq,img,ia, qid) in enumerate(zip(questions, gt_questions, images, imp_answers, q_ids)):
                 gq_dict["annotations"] += [{"image_id": int(img), "imp_ans": ans_vocab[ia], "gen_ques": " ".join(q),
                                             "gt_gen_ques": " ".join(gtq), "ques_id": int(qid)}]
-            
-        
-    confusion_mat = (
-        np.zeros((len(threshold), 2, 2))
-        if type(threshold) == list
-        else np.zeros((2, 2))
-    )
-    is_failure_prediction = True if hasattr(myModel, "failure_predictor") else False
+                    
+
     is_question_consistency = (
         True if hasattr(myModel, "question_consistency") else False
     )
 
     if isinstance(myModel, torch.nn.DataParallel):
-        is_failure_prediction = (
-            True if hasattr(myModel.module, "failure_predictor") else False
-        )
         is_question_consistency = (
             True if hasattr(myModel.module, "question_consistency") else False
         )
@@ -583,13 +432,7 @@ def one_stage_eval_model(
         n_sample = answer_scores.size(0)
         answer_scores = answer_scores.cuda() if use_cuda else answer_scores
 
-        if is_failure_prediction and not is_question_consistency:
-            _return_dict = one_stage_run_model(batch, myModel)
-            logit_res = _return_dict["logits"]
-            fp_return_dict = _return_dict["fp_return_dict"]
-            confidence_fp = fp_return_dict["confidence"]
-
-        elif is_question_consistency and not is_failure_prediction:
+        if is_question_consistency:
             _return_dict = one_stage_run_model(batch, myModel)
             logit_res = _return_dict["logits"]
             qc_return_dict = _return_dict["qc_return_dict"]
@@ -598,15 +441,6 @@ def one_stage_eval_model(
                 sampled_ids = qc_return_dict["sampled_ids"]
                 store_questions(att, batch, sampled_ids)
 
-        elif is_question_consistency and is_failure_prediction:
-            _return_dict = one_stage_run_model(batch, myModel)
-            logit_res = _return_dict["logits"]
-            fp_return_dict = _return_dict["fp_return_dict"]
-            confidence_fp = fp_return_dict["confidence"]
-            qc_return_dict = _return_dict["qc_return_dict"]
-            if "sampled_ids" in qc_return_dict.keys():
-                sampled_ids = qc_return_dict["sampled_ids"]
-                store_questions(sampled_ids, batch)
         else:
             _return_dict = one_stage_run_model(batch, myModel)
             logit_res = _return_dict["logits"]
@@ -618,48 +452,6 @@ def one_stage_eval_model(
         )
         upbound = torch.sum(torch.max(answer_scores, dim=1)[0])
 
-        if thresholding_type is not None and thresholding_type != "failure_prediction":
-
-            if type(threshold) == list and len(threshold) > 0:
-                for _th_idx, _th in enumerate(threshold):
-                    normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-                    batch_cm = thresholding(
-                        normalized_logits,
-                        answer_scores,
-                        thresholding_type,
-                        threshold[_th_idx],
-                    )
-                    confusion_mat[_th_idx] += batch_cm
-
-            else:
-                normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-                batch_cm = thresholding(
-                    normalized_logits, answer_scores, thresholding_type, threshold
-                )
-                confusion_mat += batch_cm
-
-        if is_failure_prediction:
-            normalized_logits = masked_unk_softmax(logit_res, 1, 0)
-            answers_fp = (
-                torch.max(normalized_logits, 1)[1]
-                == torch.max(answer_scores.cuda(), 1)[1]
-            )
-            fp_pred = confidence_fp
-
-            # Thresholding at zero is just computing CM
-            batch_cm = thresholding(
-                fp_pred, answers_fp, ttype="failure_prediction", threshold=0.0
-            )
-            confusion_mat += batch_cm
-
-#         cm_stat_dict = print_classification_report(
-#             confusion_mat, threshold=0.0, return_dict=True
-#         )
-
-#         for k, v in cm_stat_dict.items():
-#             if not v != v:
-#                 writer.add_scalar("val_" + k, v, i_iter)
-
         val_score_tot += predicted_scores
         val_sample_tot += n_sample
         upbound_tot += upbound
@@ -670,146 +462,6 @@ def one_stage_eval_model(
         np.save(os.path.join(log_dir, "gq_{}.npy".format(i_iter)), np.array(gq_dict))
 
     return val_score_tot / val_sample_tot, upbound_tot / val_sample_tot, val_sample_tot
-
-def print_classification_report(confusion_matrix, threshold, return_dict=False):
-    tn, fp, fn, tp = confusion_matrix.ravel()
-    prec = tp / float(tp + fp)
-    rec = tp / float(tp + fn)
-    f1 = 2 * prec * rec / float(prec + rec)
-    acc = (tp + tn) / float(tp + tn + fp + fn)
-    nacc = 0.5 * tp / float(tp + fn) + 0.5 * tn / float(tn + fp)
-    fmt_string = "{:.4f}," * 11
-    fmt_string = fmt_string[:-1]
-    n_samples = tp + fp + fn + tn
-
-    label_string = "threshold, f1, prec, rec, acc, nacc, tp, tn, fp, fn, n_samples"
-    value_list = [threshold, f1, prec, rec, acc, nacc, tp, tn, fp, fn, n_samples]
-
-    if return_dict:
-        return dict(
-            zip([key.replace(" ", "") for key in label_string.split(",")], value_list)
-        )
-
-    else:
-        print("threshold, f1, prec, rec, acc, nacc, tp, tn, fp, fn, n_samples")
-        print(fmt_string.format(*value_list))
-
-
-def thresholding(pred, answers, ttype="vanilla", threshold=0.5, return_indices=False):
-    """
-    pred = 2d array with prob distribution B x 3129
-    answers = 2d one-hot encoded array B x 3129
-    """
-
-    def get_indices(th_confidence, correct_numpy, confidence, ans_indices, indices):
-        return_dict = {
-            "fp_idx": np.argwhere(
-                np.logical_and(th_confidence == 1, correct_numpy == 0) == True
-            ).flatten(),
-            "fn_idx": np.argwhere(
-                np.logical_and(th_confidence == 0, correct_numpy == 1) == True
-            ).flatten(),
-            "tp_idx": np.argwhere(
-                np.logical_and(th_confidence == 1, correct_numpy == 1) == True
-            ).flatten(),
-            "tn_idx": np.argwhere(
-                np.logical_and(th_confidence == 0, correct_numpy == 0) == True
-            ).flatten(),
-            "confidence": confidence.cpu()
-            .data.numpy()
-            .flatten()
-            .astype(np.float64)
-            .tolist(),
-            "ans_indices": ans_indices.cpu()
-            .data.numpy()
-            .flatten()
-            .astype(np.int32)
-            .tolist(),
-            "pred_indices": indices.cpu()
-            .data.numpy()
-            .flatten()
-            .astype(np.int32)
-            .tolist(),
-        }
-        return return_dict
-
-    if ttype == "entropy":
-        pred_np = pred.cpu().data.numpy()
-        ent = np.array([entropy(pred_np[i]) for i in range(pred_np.shape[0])])
-        confidence, indices = torch.max(pred, 1)
-        ans_indices = torch.max(answers, 1)[1]
-        th_confidence = ent < threshold
-        th_confidence = th_confidence.cpu().data.numpy()
-        correct = ans_indices == indices
-        correct_numpy = correct.cpu().data.numpy()
-
-        if return_indices == True:
-            return_dict = get_indices(
-                th_confidence, correct_numpy, confidence, ans_indices, indices
-            )
-            return confusion_matrix(correct_numpy, th_confidence), return_dict
-
-        else:
-            return confusion_matrix(correct.cpu().data.numpy(), th_confidence)
-
-    elif ttype == "vanilla":
-        confidence, indices = torch.max(pred, 1)
-        ans_indices = torch.max(answers, 1)[1]
-        th_confidence = confidence > threshold
-        th_confidence = th_confidence.cpu().data.numpy()
-        correct = ans_indices == indices
-        correct_numpy = correct.cpu().data.numpy()
-
-        if return_indices == True:
-            return_dict = get_indices(
-                th_confidence, correct_numpy, confidence, ans_indices, indices
-            )
-            return confusion_matrix(correct_numpy, th_confidence), return_dict
-
-        else:
-            return confusion_matrix(correct_numpy, th_confidence)
-
-    elif ttype == "failure_prediction":
-        confidence, indices = torch.max(pred, 1)
-        ans_indices = answers.cpu().data.numpy()
-        correct_numpy = indices.cpu().data.numpy()
-        # Add dummy ans and pred indices, we'll update them in the eval function later
-
-        if return_indices == True:
-            return_dict = get_indices(
-                correct_numpy,
-                ans_indices,
-                confidence,
-                ans_indices=torch.ones_like(confidence),
-                indices=torch.ones_like(confidence),
-            )
-            return confusion_matrix(ans_indices, correct_numpy), return_dict
-
-        return confusion_matrix(ans_indices, correct_numpy)
-
-    elif ttype == "uncertainty":
-        uncertainties, max_indices = torch.max(pred, 1)
-        ans_indices = answers.cpu().data.numpy()
-        correct = uncertainties < threshold
-        correct_numpy = correct.cpu().data.numpy()
-        # Add dummy ans and pred indices, we'll update them in the eval function later
-
-        if return_indices == True:
-            return_dict = get_indices(
-                correct_numpy,
-                ans_indices,
-                uncertainties,
-                ans_indices=torch.ones_like(uncertainties),
-                indices=torch.ones_like(uncertainties),
-            )
-            return confusion_matrix(ans_indices, correct_numpy), return_dict
-
-        return confusion_matrix(ans_indices, correct_numpy)
-
-    else:
-        raise NotImplementedError(
-            "Thresholding type {} not implemented".format(ttype)
-        )
 
 def one_stage_run_model(batch, myModel, add_graph=False, log_dir=None,
                         normalize=False):
