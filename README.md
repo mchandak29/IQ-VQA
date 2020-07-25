@@ -17,8 +17,6 @@ Python implementation of work presented in https://arxiv.org/abs/2007.04422
 ### Citing IQ-VQA
 If you use this work in your research, please use the following BibTeX entry for reference:
 
-The software:
-
 ```
 @misc{goel2020iqvqa,
     title={IQ-VQA: Intelligent Visual Question Answering},
